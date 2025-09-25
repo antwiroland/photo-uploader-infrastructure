@@ -1,0 +1,238 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ECS Fargate Service Stack with CodeDeploy Blue-Green Deployment - triggered'
+
+Parameters:
+  AppName:
+    Type: String
+    Default: 'java-full-stack'
+#  DeploymentTimestamp:
+#    Type: String
+#    Default: "default"
+#    Description: 'Timestamp to force changeset creation'
+
+Resources:
+  # ECS TASK DEFINITION - blueprint for how to run your application
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AppName}-Task
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [ FARGATE ]
+      Cpu: 256
+      Memory: 512
+      ExecutionRoleArn: !ImportValue 'java-full-stack-ECSTaskExecutionRoleArn'
+      TaskRoleArn: !ImportValue 'java-full-stack-ECSTaskRoleArn'
+      ContainerDefinitions:
+        - Name: !Sub ${AppName}-Container
+          Image: !Sub
+            - "${ECRRepoURI}:latest"
+            - ECRRepoURI: !ImportValue 'java-full-stack-ECRRepositoryURI'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: SPRING_DATASOURCE_URL
+              Value: !Sub
+                - "jdbc:postgresql://${DBEndpoint}:${DBPort}/photogallery"
+                - DBEndpoint: !ImportValue 'java-full-stack-RDSInstanceEndpoint'
+                  DBPort: !ImportValue 'java-full-stack-RDSInstancePort'
+            - Name: SPRING_DATASOURCE_USERNAME
+              Value: postgres
+            - Name: S3_BUCKET_NAME
+              Value: !ImportValue 'java-full-stack-S3BucketName'
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+          Secrets:
+            - Name: SPRING_DATASOURCE_PASSWORD
+              ValueFrom: !Sub
+                - "${SecretArn}:password::"
+                - SecretArn: !ImportValue 'java-full-stack-DBSecretArn'
+          HealthCheck:
+            Command: [ "CMD-SHELL", "curl -f http://localhost:8080/ || exit 1" ]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !ImportValue 'java-full-stack-CloudWatchLogGroupName'
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: ecs
+
+  # --- GREEN TARGET GROUP FOR BLUE-GREEN DEPLOYMENT ---
+  GreenTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${AppName}-Green-TG
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !ImportValue 'java-full-stack-VPCId'
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+
+  # --- TEST LISTENER FOR BLUE-GREEN DEPLOYMENT ---
+  TestListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !ImportValue 'java-full-stack-ALBArn'
+      Port: 9000
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref GreenTargetGroup
+
+  # --- ECS SERVICE ---
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${AppName}-Service
+      Cluster: !ImportValue 'java-full-stack-ECSClusterName'
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: 0
+      LaunchType: FARGATE
+      DeploymentController:
+        Type: CODE_DEPLOY
+      LoadBalancers:
+        - TargetGroupArn: !ImportValue 'java-full-stack-ALBTargetGroupArn'
+          ContainerName: !Sub ${AppName}-Container
+          ContainerPort: 8080
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !ImportValue 'java-full-stack-PrivateSubnet1Id'
+            - !ImportValue 'java-full-stack-PrivateSubnet2Id'
+          SecurityGroups:
+            - !ImportValue 'java-full-stack-ECSSecurityGroupId'
+
+  # --- APPLICATION AUTO SCALING ---
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: ECSService
+    Properties:
+      MaxCapacity: 4
+      MinCapacity: 1
+      ResourceId: !Sub
+        - service/${ClusterName}/${ServiceName}
+        - ClusterName: !ImportValue 'java-full-stack-ECSClusterName'
+          ServiceName: !GetAtt ECSService.Name
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  ScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${AppName}-cpu-scaling-policy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 70.0
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 300
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+
+  # --- CODE DEPLOY APPLICATION ---
+  CodeDeployApp:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub ${AppName}-CodeDeploy-App
+      ComputePlatform: ECS
+
+  # --- CODE DEPLOY DEPLOYMENT GROUP ---
+  CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    DependsOn: ECSService
+    Properties:
+      ApplicationName: !Ref CodeDeployApp
+      DeploymentGroupName: !Sub ${AppName}-CodeDeploy-DG
+      ServiceRoleArn: !ImportValue 'java-full-stack-CodeDeployServiceRoleArn'
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      DeploymentStyle:
+        DeploymentType: BLUE_GREEN
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      BlueGreenDeploymentConfiguration:
+        TerminateBlueInstancesOnDeploymentSuccess:
+          Action: TERMINATE
+          TerminationWaitTimeInMinutes: 5
+        DeploymentReadyOption:
+          ActionOnTimeout: CONTINUE_DEPLOYMENT
+      AutoRollbackConfiguration:
+        Enabled: true
+        Events:
+          - DEPLOYMENT_FAILURE
+          - DEPLOYMENT_STOP_ON_ALARM
+      ECSServices:
+        - ServiceName: !GetAtt ECSService.Name
+          ClusterName: !ImportValue 'java-full-stack-ECSClusterName'
+      LoadBalancerInfo:
+        TargetGroupPairInfoList: #setting target groups for our loadbalancer
+          - TargetGroups:
+              - Name: !ImportValue 'java-full-stack-ALBTargetGroupName' #blue
+              - Name: !GetAtt GreenTargetGroup.TargetGroupName          #green
+            ProdTrafficRoute: #for production use blue listener
+              ListenerArns:
+                - !ImportValue 'java-full-stack-ALBListenerArn'
+            TestTrafficRoute: #for test use the green
+              ListenerArns:
+                - !Ref TestListener
+
+Outputs:
+  ServiceURL:
+    Description: 'URL to access the application'
+    Value: !Sub
+      - "http://${ALBDNSName}"
+      - ALBDNSName: !ImportValue 'java-full-stack-ALBDNSName'
+    Export:
+      Name: !Sub ${AppName}-ServiceURL
+
+  ECSServiceName:
+    Description: 'ECS Service Name'
+    Value: !Ref ECSService
+    Export:
+      Name: !Sub ${AppName}-ECSServiceName
+
+  CodeDeployAppName:
+    Description: 'CodeDeploy Application Name'
+    Value: !Ref CodeDeployApp
+    Export:
+      Name: !Sub ${AppName}-CodeDeployAppName
+
+  CodeDeployDeploymentGroupName:
+    Description: 'CodeDeploy Deployment Group Name'
+    Value: !Ref CodeDeployDeploymentGroup
+    Export:
+      Name: !Sub ${AppName}-CodeDeployDeploymentGroupName
+
+  TestListenerArn:
+    Description: 'Test Listener ARN for Blue-Green Deployment'
+    Value: !Ref TestListener
+    Export:
+      Name: !Sub ${AppName}-TestListenerArn
+
+  GreenTargetGroupName:
+    Description: 'Green Target Group Name'
+    Value: !GetAtt GreenTargetGroup.TargetGroupName
+    Export:
+      Name: !Sub ${AppName}-GreenTargetGroupName
+
+  ScalableTargetId:
+    Description: 'Application Auto Scaling Target ID'
+    Value: !Ref ScalableTarget
+    Export:
+      Name: !Sub ${AppName}-ScalableTargetId
+
+#  DeploymentTimestamp:
+#    Description: 'Timestamp of last deployment'
+#    Value: !Ref DeploymentTimestamp
+#    Export:
+#      Name: !Sub ${AppName}-DeploymentTimestamp

@@ -1,0 +1,97 @@
+graph TB
+subgraph "Internet"
+USER[🌐 Users]
+end
+
+subgraph "AWS Cloud"
+subgraph "VPC: 10.0.0.0/16"
+subgraph "Public Subnets"
+subgraph "AZ-1a: 10.0.1.0/24"
+ALB[🔄 Application Load Balancer]
+end
+subgraph "AZ-1b: 10.0.2.0/24"
+ALB2[🎯 ALB Target]
+end
+IGW[🌐 Internet Gateway]
+end
+
+subgraph "Private Subnets"
+subgraph "AZ-1a: 10.0.3.0/24"
+ECS1[🐳 ECS Fargate Tasks]
+VPCE1[🔗 VPC Endpoints]
+end
+subgraph "AZ-1b: 10.0.4.0/24"
+ECS2[🐳 ECS Fargate Tasks]
+VPCE2[🔗 VPC Endpoints]
+RDS[🐘 RDS PostgreSQL<br/>photogallery DB]
+end
+end
+
+subgraph "VPC Gateway Endpoints"
+S3GW[🚪 S3 Gateway Endpoint]
+end
+end
+
+subgraph "AWS Services"
+ECR[📦 Amazon ECR<br/>Container Registry]
+S3[🪣 S3 Bucket<br/>Photo Storage<br/>Private Access Only]
+CW[📊 CloudWatch Logs]
+SM[🔐 Secrets Manager<br/>DB Credentials]
+end
+
+subgraph "CI/CD Pipeline"
+GH[⚙️ GitHub Actions<br/>OIDC Authentication]
+CP[🔄 CodePipeline]
+CD[🚀 CodeDeploy<br/>Blue-Green Deployment]
+end
+end
+
+%% User traffic flow
+USER -->|HTTP:80| IGW
+IGW --> ALB
+ALB -->|Port:8080| ECS1
+ALB -->|Port:8080| ECS2
+
+%% ECS to Database
+ECS1 -->|Port:5432| RDS
+ECS2 -->|Port:5432| RDS
+
+%% ECS to S3 via VPC Endpoint
+ECS1 -.->|HTTPS:443| S3GW
+ECS2 -.->|HTTPS:443| S3GW
+S3GW -.->|Private Connection| S3
+
+%% ECS to AWS Services via VPC Endpoints
+ECS1 -->|HTTPS:443| VPCE1
+ECS2 -->|HTTPS:443| VPCE2
+VPCE1 -.-> ECR
+VPCE1 -.-> CW
+VPCE1 -.-> SM
+VPCE2 -.-> ECR
+VPCE2 -.-> CW
+VPCE2 -.-> SM
+
+%% CI/CD Flow
+GH -->|Docker Image| ECR
+GH -->|Deployment Artifacts| S3
+GH -->|Trigger| CP
+CP --> CD
+CD -->|Deploy| ECS1
+CD -->|Deploy| ECS2
+
+%% Color Styles
+classDef publicSubnet fill:#4fc3f7,stroke:#0288d1,stroke-width:2px,color:white
+classDef privateSubnet fill:#ba68c8,stroke:#7b1fa2,stroke-width:2px,color:white
+classDef database fill:#ffb74d,stroke:#f57c00,stroke-width:2px,color:black
+classDef storage fill:#81c784,stroke:#388e3c,stroke-width:2px,color:black
+classDef cicd fill:#f06292,stroke:#c2185b,stroke-width:2px,color:white
+classDef endpoint fill:#fff176,stroke:#fbc02d,stroke-width:2px,color:black
+classDef internet fill:#90caf9,stroke:#1976d2,stroke-width:2px,color:black
+
+class ALB,ALB2,IGW publicSubnet
+class ECS1,ECS2,VPCE1,VPCE2 privateSubnet
+class RDS database
+class S3,ECR storage
+class GH,CP,CD cicd
+class S3GW endpoint
+class USER internet

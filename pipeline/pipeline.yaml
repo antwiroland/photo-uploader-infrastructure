@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CodePipeline for ECS Blue-Green Deployment'
+
+Parameters:
+  AppName:
+    Type: String
+    Default: 'java-full-stack'
+  DeploymentTimestamp:
+    Type: String
+    Default: "default"
+
+Resources:
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${AppName}-Pipeline
+      RoleArn: !ImportValue 'java-full-stack-CodePipelineServiceRoleArn'
+      ArtifactStore:
+        Type: S3
+        Location: !ImportValue 'java-full-stack-ArtifactBucketName'
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: S3-Artifacts-Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: '1'
+                Provider: S3
+              Configuration:
+                S3Bucket: !ImportValue 'java-full-stack-ArtifactBucketName'
+                S3ObjectKey: deployment-artifacts/latest.zip
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: ECS-Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: '1'
+                Provider: CodeDeployToECS  # CHANGED FROM: CodeDeploy
+              Configuration:
+                ApplicationName: !ImportValue 'java-full-stack-CodeDeployAppName'
+                DeploymentGroupName: !ImportValue 'java-full-stack-CodeDeployDeploymentGroupName'
+                TaskDefinitionTemplateArtifact: SourceArtifact
+                TaskDefinitionTemplatePath: "taskdef.json"
+                AppSpecTemplateArtifact: SourceArtifact
+                AppSpecTemplatePath: "appspec.yml"
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+Outputs:
+  PipelineName:
+    Description: 'CodePipeline Name'
+    Value: !Ref CodePipeline
+
+  DeploymentTimestamp:
+    Description: 'Timestamp of last deployment'
+    Value: !Ref DeploymentTimestamp
