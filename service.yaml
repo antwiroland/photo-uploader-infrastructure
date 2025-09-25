@@ -5,10 +5,6 @@ Parameters:
   AppName:
     Type: String
     Default: 'java-full-stack'
-#  DeploymentTimestamp:
-#    Type: String
-#    Default: "default"
-#    Description: 'Timestamp to force changeset creation'
 
 Resources:
   # ECS TASK DEFINITION - blueprint for how to run your application
@@ -231,8 +227,3 @@ Outputs:
     Export:
       Name: !Sub ${AppName}-ScalableTargetId
 
-#  DeploymentTimestamp:
-#    Description: 'Timestamp of last deployment'
-#    Value: !Ref DeploymentTimestamp
-#    Export:
-#      Name: !Sub ${AppName}-DeploymentTimestamp

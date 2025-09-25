@@ -8,17 +8,13 @@ Parameters:
     Description: 'Application name used to name resources'
   GitHubRepoName:
     Type: String
-    Default: 'ecs-cicd-lab5-app'
+    Default: 'photo-uploader-app'
     Description: 'Name of the GitHub repository containing the application code'
   GitHubRepoOwner:
     Type: String
-    Default: 'ibra15-cyber'
+    Default: 'antwiroland'
     Description: 'The owner of the GitHub repository'
-    #use this to trigger change
-#  DeploymentTimestamp:
-#    Type: String
-#    Default: "default"
-#    Description: 'Timestamp to force changeset creation'
+
 
 Metadata:
   AWS::CloudFormation::Interface:
