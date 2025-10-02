@@ -93,7 +93,7 @@ Resources:
       ServiceName: !Sub ${AppName}-Service
       Cluster: !ImportValue 'java-full-stack-ECSClusterName'
       TaskDefinition: !Ref ECSTaskDefinition
-      DesiredCount: 1
+      DesiredCount: 0
       LaunchType: FARGATE
       DeploymentController:
         Type: CODE_DEPLOY
